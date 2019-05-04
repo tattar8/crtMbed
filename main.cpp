@@ -1,0 +1,252 @@
+#include "mbed.h"
+#include "chars.h"
+
+//Lines per frame, give or take
+#define LPF 290 
+
+//Timer counter register, essentially determines the main HSync value
+ uint16_t TIM = 5240;//5760;
+
+//just to make sure the board is alive
+DigitalOut myled(LED2); 
+
+//HSync and VSync digital outputs
+DigitalOut HSync(PD_7);
+DigitalOut VSync(PD_6);
+
+//Video output -- since we're using a g&w monitor it can just be digital
+//We put it by itself on port G, and at pin 0 so we can write to the entire ODR register without worrying about masks or shifts to make the operation more predictable
+DigitalOut Video(PG_0);
+
+//PWM output isn't actually used, is just to save us some config steps.  Will be removed later
+PwmOut hspwm(PA_6);
+
+//Counter to determine when to pulse VSync
+int vscnt=0;
+
+//UART debug
+Serial pc(USBTX, USBRX);
+
+//Array containing the proof-of-concept image, which is the First Order symbol.  To be removed.
+uint8_t firstorder_map[] = {
+  0xff, 0xff, 0xff, 0x3f, 0xff, 0xff, 0xc0, 
+  0xff, 0xff, 0xfc, 0x0f, 0xff, 0xff, 0xc0, 
+  0xff, 0xff, 0xf8, 0xc7, 0xff, 0xff, 0xc0, 
+  0xff, 0xff, 0xe3, 0xf1, 0xff, 0xff, 0xc0, 
+  0xff, 0xff, 0x8f, 0xfc, 0x7f, 0xff, 0xc0, 
+  0xff, 0xfe, 0x1f, 0xfe, 0x1f, 0xff, 0xc0, 
+  0xff, 0xfc, 0x7f, 0xff, 0x8f, 0xff, 0xc0, 
+  0xff, 0xf1, 0xff, 0xff, 0xe3, 0xff, 0xc0, 
+  0xff, 0xc7, 0xf8, 0x07, 0xf8, 0xff, 0xc0, 
+  0xff, 0x0f, 0x80, 0x00, 0x7c, 0x3f, 0xc0, 
+  0xfe, 0x3e, 0x01, 0xe0, 0x1f, 0x1f, 0xc0, 
+  0xf8, 0xfc, 0x71, 0xe3, 0x8f, 0xc7, 0xc0, 
+  0xe3, 0xf0, 0x79, 0xe7, 0x83, 0xf1, 0xc0, 
+  0x87, 0xe0, 0x79, 0xe7, 0x81, 0xf8, 0x40, 
+  0x1f, 0xce, 0x7d, 0xe7, 0x8c, 0xfe, 0x00, 
+  0x3f, 0x9f, 0x3d, 0xef, 0x1e, 0x7f, 0x00, 
+  0x3f, 0x1f, 0x3f, 0xff, 0x3e, 0x3f, 0x00, 
+  0x3f, 0x0f, 0xbf, 0xff, 0x7c, 0x3f, 0x00, 
+  0x3e, 0x07, 0xff, 0xff, 0xf8, 0x1f, 0x00, 
+  0x3c, 0xe3, 0xff, 0xff, 0xf0, 0xcf, 0x00, 
+  0x3c, 0xf9, 0xff, 0xff, 0xf3, 0xcf, 0x00, 
+  0x3d, 0xff, 0xff, 0xff, 0xff, 0xef, 0x00, 
+  0x38, 0xff, 0xff, 0xff, 0xff, 0xc7, 0x00, 
+  0x38, 0x3f, 0xff, 0xff, 0xff, 0x87, 0x00, 
+  0x38, 0x0f, 0xff, 0xff, 0xfe, 0x07, 0x00, 
+  0x33, 0x87, 0xff, 0xff, 0xf8, 0x03, 0x00, 
+  0x33, 0xff, 0xff, 0xff, 0xff, 0xf3, 0x00, 
+  0x33, 0xff, 0xff, 0xff, 0xff, 0xf3, 0x00, 
+  0x33, 0xff, 0xff, 0xff, 0xff, 0xf3, 0x00, 
+  0x30, 0x3f, 0xff, 0xff, 0xff, 0xc3, 0x00, 
+  0x30, 0x0f, 0xff, 0xff, 0xfc, 0x03, 0x00, 
+  0x30, 0x7f, 0xff, 0xff, 0xff, 0x83, 0x00, 
+  0x33, 0xff, 0xff, 0xff, 0xff, 0xe3, 0x00, 
+  0x3b, 0xff, 0xff, 0xff, 0xff, 0xf7, 0x00, 
+  0x39, 0xff, 0xff, 0xff, 0xff, 0xe7, 0x00, 
+  0x39, 0x87, 0xff, 0xff, 0xf8, 0xe7, 0x00, 
+  0x3c, 0x0f, 0xff, 0xff, 0xfc, 0x0f, 0x00, 
+  0x3c, 0x3f, 0xff, 0xff, 0xfe, 0x0f, 0x00, 
+  0x3c, 0x7f, 0xff, 0xff, 0xff, 0x8f, 0x00, 
+  0x3e, 0x7c, 0xff, 0xff, 0xdf, 0x9f, 0x00, 
+  0x3f, 0x38, 0xff, 0xff, 0xc7, 0x3f, 0x00, 
+  0x3f, 0x31, 0xf7, 0xfb, 0xe3, 0x3f, 0x00, 
+  0x3f, 0x83, 0xef, 0x79, 0xe0, 0x7f, 0x00, 
+  0x1f, 0xc3, 0xcf, 0x3c, 0xf0, 0xfe, 0x00, 
+  0x87, 0xe3, 0xcf, 0x3c, 0xf1, 0xf8, 0x40, 
+  0xe3, 0xf1, 0x8f, 0x3c, 0x63, 0xf1, 0xc0, 
+  0xf8, 0xfc, 0x0f, 0x3c, 0x0f, 0xc7, 0xc0, 
+  0xfe, 0x3e, 0x0e, 0x3c, 0x1f, 0x1f, 0xc0, 
+  0xff, 0x0f, 0x80, 0x00, 0x7c, 0x3f, 0xc0, 
+  0xff, 0xc7, 0xf8, 0x07, 0xf8, 0xff, 0xc0, 
+  0xff, 0xf1, 0xff, 0xff, 0xe3, 0xff, 0xc0, 
+  0xff, 0xfc, 0x7f, 0xff, 0x8f, 0xff, 0xc0, 
+  0xff, 0xfe, 0x1f, 0xfe, 0x1f, 0xff, 0xc0, 
+  0xff, 0xff, 0x8f, 0xfc, 0x7f, 0xff, 0xc0, 
+  0xff, 0xff, 0xe3, 0xf1, 0xff, 0xff, 0xc0, 
+  0xff, 0xff, 0xf8, 0xc7, 0xff, 0xff, 0xc0, 
+  0xff, 0xff, 0xfc, 0x0f, 0xff, 0xff, 0xc0, 
+  0xff, 0xff, 0xff, 0x3f, 0xff, 0xff, 0xc0, 
+};
+
+//Counter to determine the line of the image
+ int line = 0;
+
+ //Disable optimization otherwise bad stuff happens
+ #pragma GCC optimize ("O0")
+
+ //This function sends a single line of the framebuffer to the display
+ void vidout(){
+    //Don't display anything on the first 10 lines to avoid overscan.  WIll be removed later.
+    if(line < 10) {
+        line++;
+        return;
+    }
+
+    //Wait a bit to avoid overscan on the left side
+    for(int j=0; j<200;j++);
+
+    //Loop pushing pixels for each line
+    for (int i = 0; i < 49; i++){  
+        GPIOG -> ODR = frameBuffer[i][line];
+
+        //Delay a bit.  Changing this value will change the width of a pixel.
+        for(int j=0; j<15;j++);
+    }
+    
+
+    //Turn the video signal back off
+    GPIOG -> ODR = 0;
+
+
+    //Only increment the line counter every 4 lines, this has the effect of stretching the image vertically (since it's actually only 54px tall)
+    if (vscnt%4 == 1) line++;
+ }
+
+//Again, disable optimization since it messes with timing, which is extremely critical in this project
+#pragma GCC optimize ("O0")
+
+//HSync timer ISR.  On the primary counter, just bring HSync high (not used anymore since the hardware PWM is in use).  On the Ch1 counter bring it low.
+//and if within range call vidOut to display a line on the screen.  Additionally, increment vscnt
+//In either case if vscnt is higher than LPF then pulse the VSync for about 6 HSync cycles.
+void HSyncOnInterrupt (){
+
+    //Disable all IRQs so we don't have any interruptions
+    __disable_irq();
+
+    //if we hit the main counter
+    if (TIM3 -> SR & TIM_SR_UIF_Msk){
+
+        //clear interrupt
+        TIM3 -> SR &= ~TIM_SR_UIF;
+
+        //Clear the sync counter if necessary
+         if (vscnt > LPF+6){
+             vscnt = 0;
+         }
+
+         //Make sure VSync is off
+        if (!(vscnt > LPF && vscnt < LPF+6)){
+            GPIOD -> BSRR = 1 << 22;
+        }
+
+        //Pulse HSync
+        GPIOD -> BSRR = 1 << 7;   
+    }
+
+    //Channel1 counter
+    if ((TIM3 -> SR & TIM_SR_CC1IF_Msk)){
+
+        //Clear interrupt
+        TIM3 -> SR &= ~TIM_SR_CC1IF;
+
+        //Turn off HSync to create the PWM signal
+        GPIOD -> BSRR = 1 << 23;
+
+        //Call vidout to actually put something on the screen
+        if (vscnt > 8 && vscnt < LPF) vidout();
+
+        //Increment the VSync counter
+        vscnt++;
+
+    } 
+
+    //If vscnt is in the range LPF to LPF + 6 raise VSync.
+    if (vscnt > LPF && vscnt < LPF+6){
+        GPIOD -> BSRR = 1 << 6;
+        GPIOD -> BSRR = 1 << 23;
+        line=0;
+    }
+
+    //if vscnt gets higher make it 0 (resets the line counter)
+    if (vscnt > LPF+6) {
+        vscnt = 0;
+    }
+
+    //Reenable IRQ
+    __enable_irq();
+
+}
+
+
+//probably not necessary
+#pragma GCC optimize ("O0")
+
+int main() {
+
+    //Extract the POC image into the framebuffer 3 times heightwise
+    // for (int col = 0; col < 50; col++){
+    //     for (int line = 0; line < 56; line++){
+    //         frameBuffer[col][line] = ((firstorder_map[7 * line + col/7]) >> (7-col%7)) & 1;
+    //     }
+    //     for (int line = 56; line < 100; line++){
+    //         frameBuffer[col][line] = ((firstorder_map[7 * (line-56) + col/7]) >> (7-col%7)) & 1;
+    //     }
+    //     for (int line = 100; line < 150; line++){
+    //         frameBuffer[col][line] = ((firstorder_map[7 * (line-100) + col/7]) >> (7-col%7)) & 1;
+    //     }
+    // }
+
+    //Write HELLO WORLD to the framebuffer at position 15,5
+    writeStringToFb("HELLO WORLD", 15, 5);
+
+    //Dump FB over UART for verification
+    for (int line = 0; line < 56; line++){
+        for (int col = 0; col < 50; col++){
+            pc.printf("%d", frameBuffer[col][line]);
+        }
+        pc.printf("\r\n");
+    }
+
+
+    myled = 1;
+    HSync= 1;
+
+    //Set the TIM3 prescaler and value
+    TIM3 -> PSC = 0;
+    TIM3 -> ARR = TIM;
+
+    //Enable the TIM3 interrupt
+    NVIC_SetVector(TIM3_IRQn, (uint32_t) &HSyncOnInterrupt);
+    NVIC_SetPriority(TIM3_IRQn, 0);
+    NVIC_EnableIRQ(TIM3_IRQn);
+
+    //Set the channel1 value
+    TIM3 -> CCR1 = 300; 149;
+
+    //Enable the interrupts for the main and channel1 triggers
+    TIM3 -> DIER |= 1 <<  TIM_DIER_UIE_Pos;
+    TIM3 -> DIER |= 1 << TIM_DIER_CC1IE_Pos;
+    char k;
+    while(1){
+        pc.scanf("%c", &k);
+        if(k=='n'){
+            TIM3 -> ARR +=5;
+        }
+        else{
+            TIM3 -> ARR -=5;
+        }
+        pc.printf("%d \r\n", TIM3 -> ARR);
+    }
+
+}
